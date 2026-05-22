@@ -1,79 +1,109 @@
 # VedaVine
 
+[![CI](https://github.com/paispa/vedavine/actions/workflows/ci.yml/badge.svg)](https://github.com/paispa/vedavine/actions/workflows/ci.yml)
+
 **A holistic AI viticulture advisor that runs entirely on your Raspberry Pi.**
 
-Snap a photo of a vine with your iPhone, open `vedavine.local` in Safari,
-and get a structured assessment — severity, observations, recommendations —
-from Gemma 4 E2B running locally via Ollama. No cloud, no API keys, no
-photos leaving your device.
+Snap a photo of a vine, open the app, and get a structured assessment —
+severity, observations, recommendations — from **Gemma 4 E2B** running locally
+via Ollama. The advice is grounded in a local viticulture corpus (RAG) and
+current local weather, and it never depends on a third-party AI service.
 
 Built for the [DEV.to Gemma 4 Challenge](https://dev.to/).
 
-![VedaVine screenshot placeholder](docs/screenshot.png)
+## What it does
 
-## Why local-only
+1. You upload a vine photo (and optionally type a concern, e.g. *"yellowing
+   leaf edges — mildew or nutrient?"*).
+2. Gemma 4 assesses the image, **grounded** in:
+   - **Retrieved passages** from a local viticulture corpus (Vrikshayurveda,
+     ATTRA guides, SARE, NRCS soil biology, …) via on-device embeddings.
+   - **Current weather** for the vineyard (humidity / rain → disease pressure).
+3. You get back strict JSON — severity, summary, observations, recommendations
+   — rendered with a colored severity badge.
 
-A vineyard is a private place. The vines are your trade, the photos
-incidentally capture your land, and the assessments are commercially
-sensitive. VedaVine never sends any of that anywhere — the only network
-call the app makes is to `localhost:11434`, your own Ollama instance.
+All model inference runs **on the Pi**. The only outbound calls are an optional
+weather lookup (US NWS, sends a location, never your photo) and an optional
+Cloudflare tunnel for remote access — see [Privacy](#privacy).
+
+## Features
+
+- 🔒 **On-device Gemma 4 inference** via Ollama — no third-party AI sees your data.
+- 📚 **RAG grounding** over a viticulture corpus (`all-minilm` embeddings +
+  `sqlite-vec`). Retrieval is **dynamic** (driven by your typed concern) or
+  static (the vineyard's profile).
+- 🌦️ **Weather grounding** from the US National Weather Service.
+- 🎚️ **Adjustable analysis depth** (Quick / Balanced / Thorough) trading speed
+  for grounding richness.
+- 🍇 **Per-grower context** — optional varietal / region / ZIP so the advisor
+  can be shared with growers elsewhere.
+- 🌐 **Optional remote access** via Cloudflare Tunnel + Access (email-gated).
+- 🧱 **Defensive JSON parsing** — handles Gemma's markdown fences and
+  surrounding commentary, with a graceful placeholder fallback.
 
 ## Hardware
 
-- Raspberry Pi 5, 8GB RAM (4GB works for smaller models — `gemma4:e2b`
-  benefits from 8GB headroom)
-- microSD card, 32GB+
+- Raspberry Pi 5, **8 GB RAM** (Gemma 4 E2B is ~7.7 GB loaded; 8 GB is the
+  practical floor)
+- microSD card, 32 GB+
 - Pi power supply
-- Same Wi-Fi network as your iPhone
 
-## Quick start
-
-On the Pi:
+## Quick start (on the Pi)
 
 ```bash
-git clone <this repo> ~/vedavine
+git clone https://github.com/paispa/vedavine.git ~/vedavine
 cd ~/vedavine
 cp config.yaml.template config.yaml
-# Edit config.yaml — fill in your vineyard details and a random secret_key
+# Edit config.yaml — vineyard details, a random flask.secret_key, and
+# (optional) vineyard lat/lon for weather.
 bash setup.sh
 ```
 
-The setup script is idempotent. It will:
+`setup.sh` is idempotent. It installs system packages, creates a venv, installs
+Ollama and pulls the model, sets the hostname to `vedavine`, installs a systemd
+unit, and (optionally) registers a Cloudflare tunnel if a token is present.
 
-1. Install `python3-venv`, `avahi-daemon`, and other apt packages.
-2. Create a virtualenv and install Python deps.
-3. Install Ollama (if missing), pull the model, and run a warmup inference.
-4. Set the Pi hostname to `vedavine` so it answers on `vedavine.local`.
-5. Install a systemd unit so VedaVine starts on boot.
+Then open **`http://vedavine.local:5000`** and upload a vine photo.
 
-When it finishes, open **`http://vedavine.local:5000`** on your iPhone and
-upload a vine photo.
+### Build the RAG index
+
+Drop viticulture PDFs into `corpus/`, then on the Pi:
+
+```bash
+source venv/bin/activate
+python build_index.py        # embeds corpus -> rag.db (sqlite-vec)
+python retrieve.py "downy mildew on grape leaves"   # sanity-check retrieval
+```
+
+The embedder is configurable (`rag.embed_model`); the chunk dimension is
+auto-detected, so swapping models needs no code change (rebuild the index).
 
 ## Local development (no Pi)
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp config.yaml.template config.yaml
-# edit config.yaml
-ollama serve &           # in another terminal
-ollama pull gemma4:e2b
-python app.py
+cp config.yaml.template config.yaml   # edit it
+ollama serve & ollama pull gemma4:e2b
+python app.py                          # http://localhost:5000
 ```
 
-Then open `http://localhost:5000`.
+RAG and weather fail soft — if `rag.db` or the network is unavailable, the app
+still runs, just without that grounding.
 
-## How Gemma 4 E2B is used
+## How it works
 
-Each upload follows the same pipeline:
+`POST /analyze` (multipart):
 
-1. **Receive** the file via `POST /analyze` (max 10MB, JPEG/PNG/HEIC/WebP).
-2. **Downscale** to a 1024px max edge with Pillow + `pillow-heif`. This is
-   the difference between a 5-second and a 50-second inference on a Pi 5.
-3. **Send** the resized image as base64 to `localhost:11434/api/generate`
-   with a system prompt built from your `config.yaml` vineyard details.
-4. **Parse** Gemma's reply into a strict JSON schema:
+1. **Preprocess** — open (HEIC/JPEG/PNG/WebP), downscale to a 1024 px max edge,
+   re-encode JPEG q85. This is the single biggest Pi-side latency win.
+2. **Retrieve** — embed the concern (or vineyard profile) with `all-minilm`,
+   KNN over `rag.db`, take the top *k* passages.
+3. **Weather** — fetch + cache the NWS forecast for the location.
+4. **Prompt** — build the system prompt from vineyard config + weather +
+   retrieved passages, and send the image to `localhost:11434/api/generate`
+   (`think: false`).
+5. **Parse** into the schema:
    ```json
    {
      "severity": "Healthy" | "Monitor" | "Attention Needed",
@@ -82,12 +112,27 @@ Each upload follows the same pipeline:
      "recommendations": ["..."]
    }
    ```
-5. **Render** the result with a colored severity badge and append it to
-   the in-memory history (last 20 assessments).
 
-Markdown-fenced and commentary-wrapped responses from Gemma are handled
-gracefully — the parser strips fences and pulls the JSON object out of any
-surrounding chatter.
+## Privacy
+
+VedaVine's defining property is that **the AI runs on your own hardware** — no
+photo or assessment is ever sent to a third-party model service. Two optional,
+clearly-scoped exceptions:
+
+- **Weather:** if enabled, the app fetches a forecast from the US NWS using the
+  vineyard's coordinates. It sends a location, never your image.
+- **Remote access:** if you expose the app via Cloudflare Tunnel, requests
+  (including uploads) traverse Cloudflare's edge over TLS to reach your Pi.
+  Inference still happens only on the Pi. Cloudflare Access gates it to
+  approved emails.
+
+Both are off by default in `config.yaml.template`.
+
+## Configuration
+
+Everything user-specific lives in `config.yaml` (gitignored;
+`config.yaml.template` defines the schema). The app **hard-fails on startup**
+if the file is missing or `flask.secret_key` is still the placeholder.
 
 ## Tests
 
@@ -95,8 +140,8 @@ surrounding chatter.
 python -m unittest test_app.py
 ```
 
-Covers the response parser and the image downscaler. Doesn't require a live
-Ollama instance.
+Covers the JSON parser, the image downscaler, prompt construction, and the
+RAG/weather fail-soft paths. No live Ollama required.
 
 ## License
 
