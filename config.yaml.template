@@ -1,0 +1,29 @@
+vineyard:
+  name: "Your Vineyard Name"
+  location: "Your Region"
+  varietal: "Your Varietal(s)"
+  notes: "Any additional context for the advisor"
+  lat: 0.0     # vineyard latitude  (for weather grounding; US only)
+  lon: 0.0     # vineyard longitude
+
+flask:
+  secret_key: "change-this-to-a-random-string"
+  debug: false
+  port: 5000
+
+ollama:
+  host: "http://localhost:11434"
+  model: "gemma4:e2b"
+  timeout: 300
+
+rag:
+  enabled: true              # ground recommendations in the local corpus (rag.db)
+  embed_model: "all-minilm"  # embedder for the index + queries; must rebuild rag.db if changed
+  dynamic: false             # true = retrieve on the grower's typed concern (needs OLLAMA_MAX_LOADED_MODELS=2)
+  k: 4                       # number of corpus passages to retrieve
+  max_chars_per_chunk: 600   # trim each passage so the prompt stays compact
+
+weather:
+  enabled: false             # ground in current weather via NWS api.weather.gov (outbound call; US-only)
+  ttl_seconds: 3600          # cache duration; weather changes slowly
+  user_agent: "VedaVine/1.0" # NWS requires a descriptive User-Agent or returns 403

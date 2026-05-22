@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1208" />
+  <title>VedaVine — {{ vineyard.name or "Vineyard Advisor" }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
+</head>
+<body>
+  <header class="site-header">
+    <img class="logo" src="{{ url_for('static', filename='logo.png') }}" alt="VedaVine" />
+    <div class="title-block">
+      <h1>VedaVine</h1>
+      <p class="tagline">Holistic vineyard advisor</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card upload-panel">
+      <form id="analyze-form" autocomplete="off">
+        <label class="file-input-label" for="image-input">
+          <span class="file-input-icon">+</span>
+          <span class="file-input-text">Take a photo or choose one</span>
+          <input
+            id="image-input"
+            type="file"
+            name="image"
+            accept="image/*,image/heic,image/heif"
+            required
+          />
+        </label>
+        <div id="preview-wrap" class="preview-wrap" hidden>
+          <img id="preview" alt="Selected vine" />
+        </div>
+        <label class="concern-label" for="concern-input">What should VedaVine focus on? <span class="optional">(optional)</span></label>
+        <textarea
+          id="concern-input"
+          name="concern"
+          class="concern-input"
+          rows="2"
+          maxlength="500"
+          placeholder="e.g. yellowing on the leaf edges — is this mildew or a nutrient issue?"
+        ></textarea>
+        <label class="concern-label" for="depth-input">Analysis depth</label>
+        <select id="depth-input" name="k" class="concern-input">
+          <option value="2">Quick — fewer sources (~4½ min)</option>
+          <option value="3" selected>Balanced (~5½ min)</option>
+          <option value="4">Thorough — more sources (~7 min)</option>
+        </select>
+        <details class="grower-context">
+          <summary>Different vineyard? Set varietal, region &amp; weather (optional)</summary>
+          <input id="varietal-input" name="varietal" class="concern-input" type="text" maxlength="100" placeholder="Varietal — e.g. Pinot Noir" />
+          <input id="region-input" name="region" class="concern-input" type="text" maxlength="120" placeholder="Region / AVA — e.g. Sta. Rita Hills, CA" />
+          <input id="zip-input" name="zip" class="concern-input" type="text" maxlength="10" inputmode="numeric" placeholder="US ZIP for local weather — e.g. 93428" />
+        </details>
+        <button id="submit-btn" type="submit" class="primary" disabled>Analyze Vine</button>
+      </form>
+    </section>
+
+    <section id="result-panel" class="card result-panel" hidden>
+      <div class="result-header">
+        <span id="severity-badge" class="severity-badge"></span>
+        <span id="result-elapsed" class="elapsed"></span>
+      </div>
+      <p id="result-summary" class="summary"></p>
+      <div class="result-section">
+        <h3>Observations</h3>
+        <ul id="result-observations"></ul>
+      </div>
+      <div class="result-section">
+        <h3>Recommendations</h3>
+        <ul id="result-recommendations"></ul>
+      </div>
+    </section>
+
+    <section id="error-panel" class="card error-panel" hidden>
+      <h3>Something went wrong</h3>
+      <p id="error-message"></p>
+    </section>
+
+    <section class="card history-panel">
+      <h2>Recent assessments</h2>
+      <ul id="history-list">
+        {% for item in history %}
+          <li class="history-item">
+            <div class="history-row">
+              <span class="severity-badge severity-{{ item.severity|lower|replace(' ', '-') }}">{{ item.severity }}</span>
+              <time>{{ item.timestamp }}</time>
+            </div>
+            <p>{{ item.summary }}</p>
+          </li>
+        {% else %}
+          <li class="history-empty">No assessments yet — upload your first vine photo above.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </main>
+
+  <div id="loading-overlay" class="loading-overlay" hidden>
+    <div class="spinner"></div>
+    <p class="loading-text">VedaVine is thinking…</p>
+    <p class="loading-sub">This may take a minute on first run.</p>
+  </div>
+
+  <footer class="site-footer">
+    {% if user_email %}<p class="signed-in">Signed in as {{ user_email }}</p>{% endif %}
+    <p>Runs on a local Raspberry Pi in Michigan — no third-party AI ever sees your photos.</p>
+    {% if vineyard.name %}<p class="attribution">Tested at {{ vineyard.name }}{% if vineyard.location %} &middot; {{ vineyard.location }}{% endif %}</p>{% endif %}
+  </footer>
+
+  <script>
+    (function () {
+      const form = document.getElementById('analyze-form');
+      const fileInput = document.getElementById('image-input');
+      const submitBtn = document.getElementById('submit-btn');
+      const previewWrap = document.getElementById('preview-wrap');
+      const preview = document.getElementById('preview');
+      const overlay = document.getElementById('loading-overlay');
+      const resultPanel = document.getElementById('result-panel');
+      const errorPanel = document.getElementById('error-panel');
+      const errorMessage = document.getElementById('error-message');
+      const severityBadge = document.getElementById('severity-badge');
+      const resultElapsed = document.getElementById('result-elapsed');
+      const resultSummary = document.getElementById('result-summary');
+      const resultObservations = document.getElementById('result-observations');
+      const resultRecommendations = document.getElementById('result-recommendations');
+      const historyList = document.getElementById('history-list');
+
+      function severityClass(sev) {
+        const s = (sev || '').toLowerCase();
+        if (s === 'healthy') return 'severity-healthy';
+        if (s === 'attention needed') return 'severity-attention';
+        return 'severity-monitor';
+      }
+
+      function setList(ul, items) {
+        ul.innerHTML = '';
+        if (!items || !items.length) {
+          const li = document.createElement('li');
+          li.className = 'muted';
+          li.textContent = 'None reported.';
+          ul.appendChild(li);
+          return;
+        }
+        items.forEach(function (text) {
+          const li = document.createElement('li');
+          li.textContent = text;
+          ul.appendChild(li);
+        });
+      }
+
+      fileInput.addEventListener('change', function () {
+        const file = fileInput.files && fileInput.files[0];
+        submitBtn.disabled = !file;
+        if (!file) {
+          previewWrap.hidden = true;
+          preview.removeAttribute('src');
+          return;
+        }
+        // HEIC files don't preview natively in Safari from a URL.createObjectURL,
+        // but JPEG/PNG do. Try the preview anyway; on error, hide it.
+        const url = URL.createObjectURL(file);
+        preview.onload = function () { previewWrap.hidden = false; };
+        preview.onerror = function () { previewWrap.hidden = true; };
+        preview.src = url;
+      });
+
+      form.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+
+        resultPanel.hidden = true;
+        errorPanel.hidden = true;
+        overlay.hidden = false;
+        submitBtn.disabled = true;
+
+        const fd = new FormData();
+        fd.append('image', file);
+        const concern = document.getElementById('concern-input').value.trim();
+        if (concern) fd.append('concern', concern);
+        ['varietal', 'region', 'zip'].forEach(function (id) {
+          const el = document.getElementById(id + '-input');
+          const val = el && el.value.trim();
+          if (val) fd.append(id, val);
+        });
+        fd.append('k', document.getElementById('depth-input').value);
+
+        try {
+          const resp = await fetch('/analyze', { method: 'POST', body: fd });
+          const data = await resp.json().catch(function () { return { error: 'Invalid response from server.' }; });
+          if (!resp.ok || data.error) {
+            errorMessage.textContent = data.error || ('Server returned ' + resp.status);
+            errorPanel.hidden = false;
+            return;
+          }
+          renderResult(data);
+          prependHistory(data);
+        } catch (err) {
+          errorMessage.textContent = 'Network error: ' + err.message;
+          errorPanel.hidden = false;
+        } finally {
+          overlay.hidden = true;
+          submitBtn.disabled = false;
+        }
+      });
+
+      function renderResult(data) {
+        severityBadge.textContent = data.severity;
+        severityBadge.className = 'severity-badge ' + severityClass(data.severity);
+        resultElapsed.textContent = data.elapsed_s ? data.elapsed_s + 's' : '';
+        resultSummary.textContent = data.summary || '';
+        setList(resultObservations, data.observations);
+        setList(resultRecommendations, data.recommendations);
+        resultPanel.hidden = false;
+        resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
+      function prependHistory(data) {
+        const empty = historyList.querySelector('.history-empty');
+        if (empty) empty.remove();
+        const li = document.createElement('li');
+        li.className = 'history-item';
+        const row = document.createElement('div');
+        row.className = 'history-row';
+        const badge = document.createElement('span');
+        badge.className = 'severity-badge ' + severityClass(data.severity);
+        badge.textContent = data.severity;
+        const ts = document.createElement('time');
+        ts.textContent = data.timestamp;
+        row.appendChild(badge);
+        row.appendChild(ts);
+        const p = document.createElement('p');
+        p.textContent = data.summary || '';
+        li.appendChild(row);
+        li.appendChild(p);
+        historyList.insertBefore(li, historyList.firstChild);
+      }
+    })();
+  </script>
+</body>
+</html>

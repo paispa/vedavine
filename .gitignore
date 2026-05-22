@@ -1,0 +1,17 @@
+config.yaml
+CLAUDE.local.md
+cloudflared.token
+.claude/settings.local.json
+rag.db
+corpus/
+uploads/
+*.jpg
+*.jpeg
+*.png
+!static/logo.png
+.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+.DS_Store
