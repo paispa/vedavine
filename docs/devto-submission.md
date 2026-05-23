@@ -70,9 +70,9 @@ This is the part I'm proudest of: Gemma 4 isn't a party trick that names a disea
 
 Running a 7.7 GB multimodal model on an 8 GB Pi is a knife-edge. Here's what it actually took.
 
-### 1. The first inference took 9 minutes. Then ~3.7.
+### 1. The first inference took 9 minutes. Then ~3.7 minutes.
 
-My first real assessment clocked **543 seconds**. CPU-only inference of a 7.7 GB vision model on Pi 5 ARM silicon is just *slow* — there's no GPU offload, `ollama ps` shows `100% CPU`. The single biggest lever turned out to be **`think: false`** in the Ollama payload: disabling the reasoning trace cut the text-generation stage roughly **3×** (251s → 86s), taking the warm baseline from 484s to **~225s** with no measurable loss in JSON quality.
+My first real assessment clocked **543 seconds**. CPU-only inference of a 7.7 GB vision model on Pi 5 ARM silicon is just *slow* — there's no GPU offload, `ollama ps` shows `100% CPU`. The single biggest lever turned out to be **`think: false`** in the Ollama payload: disabling the reasoning trace cut the text-generation stage roughly **3×** (251s → 86s), taking the warm baseline from **484s (think on) to ~225s (think off)** with no measurable loss in JSON quality.
 
 ### 2. Grounding doubles latency — and that's a *choice*, not a bug.
 
@@ -92,7 +92,7 @@ A winemaker friend, **Rajat Parr**, farms Pinot Noir on California's Central Coa
 
 I wanted Rajat to be able to hit `vedavine.app` from California, so the Pi sits behind a Cloudflare Tunnel + Access (email-gated). Great, except: Cloudflare's edge drops HTTP requests at ~100 seconds, and Gemma routinely takes 3–7 minutes. The first remote test came back with *"Invalid response from server"* — the browser was trying to parse Cloudflare's HTML timeout page as JSON.
 
-The fix was structural, not a knob to turn: I made `/analyze` an **async submit**. It validates the upload, kicks off a background thread, and returns a `job_id` instantly. The browser polls `/result/<job_id>` every four seconds. Each individual HTTP hop now finishes in under a second — Cloudflare never sees a slow request — while the Pi gets all the wall-clock it needs. A 12-line change to `app.py` and a 30-line change to the frontend, and remote access went from "broken in production" to "works at any latency."
+The fix was structural, not a knob to turn: I made `/analyze` an **async submit**. It validates the upload, kicks off a background thread, and returns a `job_id` instantly. The browser polls `/result/<job_id>` every four seconds. Each individual HTTP hop now finishes in under a second — Cloudflare never sees a slow request — while the Pi gets all the wall-clock it needs. One small new endpoint, a polling loop in the frontend, and remote access went from "broken in production" to "works at any latency."
 
 ## Privacy, stated honestly
 

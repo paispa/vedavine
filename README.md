@@ -9,7 +9,7 @@ severity, observations, recommendations — from **Gemma 4 E2B** running locally
 via Ollama. The advice is grounded in a local viticulture corpus (RAG) and
 current local weather, and it never depends on a third-party AI service.
 
-Built for the [DEV.to Gemma 4 Challenge](https://dev.to/).
+Built for the [DEV.to Gemma 4 Challenge](https://dev.to/devteam/join-the-gemma-4-challenge-3000-prize-pool-for-ten-winners-23in).
 
 ## What it does
 
