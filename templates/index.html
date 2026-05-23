@@ -101,7 +101,7 @@
   <div id="loading-overlay" class="loading-overlay" hidden>
     <div class="spinner"></div>
     <p class="loading-text">VedaVine is thinking…</p>
-    <p class="loading-sub">This may take a minute on first run.</p>
+    <p class="loading-sub">Gemma 4 runs on a Raspberry Pi — assessment usually takes 3–6 minutes. <span id="loading-elapsed"></span></p>
   </div>
 
   <footer class="site-footer">
@@ -167,6 +167,43 @@
         preview.src = url;
       });
 
+      const loadingElapsed = document.getElementById('loading-elapsed');
+
+      // Async job pattern: POST /analyze returns a job_id; poll /result/<id>
+      // every few seconds until status flips off "running". Each individual
+      // HTTP hop stays well under Cloudflare's ~100s edge timeout.
+      const POLL_INTERVAL_MS = 4000;
+      const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 min hard ceiling
+
+      function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+      async function pollJob(jobId, startedAt) {
+        const deadline = Date.now() + POLL_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+          await sleep(POLL_INTERVAL_MS);
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          loadingElapsed.textContent = '(' + elapsed + 's elapsed)';
+          let resp;
+          try {
+            resp = await fetch('/result/' + encodeURIComponent(jobId));
+          } catch (err) {
+            // Transient network blip — keep polling.
+            continue;
+          }
+          let data;
+          try {
+            data = await resp.json();
+          } catch (err) {
+            // Non-JSON (e.g. Cloudflare interstitial) — keep polling.
+            continue;
+          }
+          if (data.status === 'running') continue;
+          if (data.status === 'done') return { ok: true, data: data };
+          return { ok: false, error: data.error || ('Server returned ' + resp.status) };
+        }
+        return { ok: false, error: 'Analysis timed out after 15 minutes.' };
+      }
+
       form.addEventListener('submit', async function (e) {
         e.preventDefault();
         const file = fileInput.files && fileInput.files[0];
@@ -176,6 +213,7 @@
         errorPanel.hidden = true;
         overlay.hidden = false;
         submitBtn.disabled = true;
+        loadingElapsed.textContent = '';
 
         const fd = new FormData();
         fd.append('image', file);
@@ -188,16 +226,23 @@
         });
         fd.append('k', document.getElementById('depth-input').value);
 
+        const startedAt = Date.now();
         try {
           const resp = await fetch('/analyze', { method: 'POST', body: fd });
-          const data = await resp.json().catch(function () { return { error: 'Invalid response from server.' }; });
-          if (!resp.ok || data.error) {
-            errorMessage.textContent = data.error || ('Server returned ' + resp.status);
+          const submitData = await resp.json().catch(function () { return { error: 'Invalid response from server.' }; });
+          if (!resp.ok || submitData.error || !submitData.job_id) {
+            errorMessage.textContent = submitData.error || ('Server returned ' + resp.status);
             errorPanel.hidden = false;
             return;
           }
-          renderResult(data);
-          prependHistory(data);
+          const outcome = await pollJob(submitData.job_id, startedAt);
+          if (!outcome.ok) {
+            errorMessage.textContent = outcome.error;
+            errorPanel.hidden = false;
+            return;
+          }
+          renderResult(outcome.data);
+          prependHistory(outcome.data);
         } catch (err) {
           errorMessage.textContent = 'Network error: ' + err.message;
           errorPanel.hidden = false;

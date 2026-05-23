@@ -71,15 +71,38 @@ smoke() {
       return 1
     fi
   fi
-  c_b "==> POST /analyze  image=$img  (this runs real inference, ~3-4 min)"
+  c_b "==> POST /analyze  image=$img  (async; submit + poll, real inference ~3-7 min)"
   local started=$SECONDS
   # Run curl on the Pi against localhost so we don't ship the image over the LAN.
-  local resp
-  if ! resp="$(ssh "$PI" "curl -fsS -m 900 -F image=@'$img' http://localhost:${PORT}/analyze" 2>&1)"; then
-    c_r "  request failed:"
-    printf '%s\n' "$resp"
+  # New flow: /analyze returns a job_id (HTTP 202), then we poll /result/<id>.
+  local submit
+  if ! submit="$(ssh "$PI" "curl -fsS -m 30 -F image=@'$img' http://localhost:${PORT}/analyze" 2>&1)"; then
+    c_r "  submit failed:"
+    printf '%s\n' "$submit"
     return 1
   fi
+  local job_id
+  job_id="$(printf '%s' "$submit" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("job_id",""))' 2>/dev/null)"
+  if [[ -z "$job_id" ]]; then
+    c_r "  no job_id in submit response:"
+    printf '%s\n' "$submit"
+    return 1
+  fi
+  c_g "  job_id: $job_id"
+
+  local resp status=""
+  while true; do
+    sleep 5
+    if ! resp="$(ssh "$PI" "curl -fsS -m 15 http://localhost:${PORT}/result/$job_id" 2>&1)"; then
+      c_y "  poll error (will retry): $resp"
+      continue
+    fi
+    status="$(printf '%s' "$resp" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("status",""))' 2>/dev/null || true)"
+    if [[ "$status" != "running" ]]; then break; fi
+    printf '.'
+  done
+  echo
+
   local wall=$(( SECONDS - started ))
   printf '%s' "$resp" | python3 -c '
 import sys, json
@@ -87,17 +110,24 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     print("  non-JSON response:"); print(sys.stdin.read()); sys.exit(1)
-if "error" in d:
-    print("  ERROR:", d["error"]); sys.exit(1)
+if d.get("status") == "error" or "error" in d:
+    print("  ERROR:", d.get("error", "(no message)")); sys.exit(1)
 sev = d.get("severity", "?")
+elapsed = d.get("elapsed_s", "?")
 print(f"  severity:     {sev}")
-print(f"  elapsed_s:    {d.get(\"elapsed_s\", \"?\")} (server-measured inference)")
+print(f"  elapsed_s:    {elapsed} (server-measured inference)")
 sm = (d.get("summary") or "").strip().replace("\n", " ")
 print(f"  summary:      {sm[:200]}")
 obs = d.get("observations") or []
 recs = d.get("recommendations") or []
 print(f"  observations: {len(obs)}   recommendations: {len(recs)}")
-fb = (d.get("summary","").startswith("[unparsed]") or sev=="Monitor" and not obs)
+srcs = d.get("sources") or []
+if srcs:
+    src0 = srcs[0]
+    src_name = src0.get("source", "?")
+    src_page = src0.get("page", "?")
+    print(f"  sources:      {len(srcs)} cited  (e.g. {src_name} p.{src_page})")
+fb = (sev=="Monitor" and not obs)
 print("  NOTE: looks like the parser fallback (placeholder) — check raw output" if fb else "  parsed OK")
 ' || { c_r "  could not parse response"; printf '%s\n' "$resp"; return 1; }
   c_g "==> smoke done in ${wall}s wall"

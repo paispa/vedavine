@@ -5,10 +5,14 @@ cloudflared.token
 rag.db
 corpus/
 uploads/
+static/testing/
 *.jpg
 *.jpeg
 *.png
 !static/logo.png
+!docs/*.jpeg
+!docs/*.jpg
+!docs/*.png
 .env
 __pycache__/
 *.pyc

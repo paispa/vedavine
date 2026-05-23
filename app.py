@@ -11,7 +11,9 @@ import base64
 import io
 import json
 import os
+import secrets
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -87,6 +89,15 @@ app.config["SECRET_KEY"] = config["flask"]["secret_key"]
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 history: list[dict[str, Any]] = []
+
+# In-memory job tracking for async /analyze. Cloudflare's free-tier edge drops
+# HTTP requests at ~100s; gemma4:e2b inference on the Pi takes 3-7 minutes.
+# So /analyze hands back a job id and the browser polls /result/<id>.
+# Single gunicorn worker (`-w 1`) means we never need to coordinate across
+# processes; threading.Lock is sufficient for the in-process dict.
+_jobs_lock = threading.Lock()
+_jobs: dict[str, dict[str, Any]] = {}
+JOB_TTL_SECONDS = 1800  # 30 min: long enough to forget a page, short enough to bound memory
 
 _rag = config.get("rag", {})
 RAG_ENABLED = bool(_rag.get("enabled", True))
@@ -336,8 +347,89 @@ def index():
     )
 
 
+def _prune_jobs() -> None:
+    """Drop finished jobs older than TTL. Called opportunistically on new submits."""
+    now = time.monotonic()
+    with _jobs_lock:
+        stale = [
+            jid for jid, j in _jobs.items()
+            if j["status"] != "running"
+            and (now - j.get("finished_at", now)) > JOB_TTL_SECONDS
+        ]
+        for jid in stale:
+            del _jobs[jid]
+
+
+def _run_analysis_job(
+    job_id: str,
+    image_b64: str,
+    concern: str,
+    vineyard: dict[str, Any] | None,
+    zip_code: str,
+    k: int,
+    saved_filename: str,
+) -> None:
+    """Background worker: calls Gemma, writes result back into _jobs[job_id].
+
+    Mirrors the error mapping the old synchronous /analyze used to do, but
+    captures the result in shared state instead of returning an HTTP response.
+    """
+    started = time.monotonic()
+    try:
+        result = call_ollama(image_b64, concern, vineyard, zip_code, k)
+        elapsed = round(time.monotonic() - started, 1)
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "filename": saved_filename,
+            "elapsed_s": elapsed,
+            "concern": concern,
+            **result,
+        }
+        # History is only touched from this background thread plus index() reads.
+        # The GIL plus our single gunicorn worker makes list.insert atomic enough
+        # for this small, append-mostly use; no lock added to keep diff minimal.
+        history.insert(0, entry)
+        del history[HISTORY_LIMIT:]
+        with _jobs_lock:
+            _jobs[job_id].update(
+                {"status": "done", "result": entry, "finished_at": time.monotonic()}
+            )
+        return
+    except requests.Timeout:
+        msg = (
+            "Gemma took too long to respond. The first run after boot can be "
+            "slow — try again in a minute, or raise ollama.timeout in config.yaml."
+        )
+        status_code = 504
+    except requests.ConnectionError:
+        msg = "Cannot reach Ollama at " + config["ollama"]["host"] + "."
+        status_code = 502
+    except requests.HTTPError as exc:
+        msg = f"Ollama returned an error: {exc}"
+        status_code = 502
+    except Exception as exc:  # noqa: BLE001 — never let the worker die silently
+        app.logger.exception("Background analysis failed")
+        msg = f"Analysis failed: {exc}"
+        status_code = 500
+    with _jobs_lock:
+        _jobs[job_id].update(
+            {
+                "status": "error",
+                "error": msg,
+                "status_code": status_code,
+                "finished_at": time.monotonic(),
+            }
+        )
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    """Submit a vine photo for analysis.
+
+    Returns immediately with a `job_id`; the browser polls /result/<job_id>
+    until the background thread finishes. This keeps every HTTP hop under
+    Cloudflare's ~100s edge timeout while Gemma takes its 3-7 minutes.
+    """
     if "image" not in request.files:
         return jsonify({"error": "No image uploaded."}), 400
     upload = request.files["image"]
@@ -390,36 +482,48 @@ def analyze():
 
     image_b64 = base64.b64encode(jpeg_bytes).decode("ascii")
 
-    started = time.monotonic()
-    try:
-        result = call_ollama(image_b64, concern, vineyard, zip_code, k)
-    except requests.Timeout:
+    _prune_jobs()
+    job_id = secrets.token_urlsafe(12)
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "running", "started_at": time.monotonic()}
+
+    thread = threading.Thread(
+        target=_run_analysis_job,
+        args=(job_id, image_b64, concern, vineyard, zip_code, k, saved_path.name),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id, "status": "running"}), 202
+
+
+@app.route("/result/<job_id>", methods=["GET"])
+def result(job_id: str):
+    """Poll for a submitted job's result.
+
+    Returns {"status": "running"} while the worker is still going (so the
+    frontend can keep polling cheaply), the full entry once done, or an
+    error payload with the original HTTP status code if the job failed.
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Unknown job — it may have expired."}), 404
+        # Copy under the lock; release before serializing for jsonify.
+        snapshot = dict(job)
+    if snapshot["status"] == "running":
         return jsonify(
             {
-                "error": (
-                    "Gemma took too long to respond. The first run after boot can be "
-                    "slow — try again in a minute, or raise ollama.timeout in config.yaml."
-                )
+                "status": "running",
+                "elapsed_s": round(time.monotonic() - snapshot["started_at"], 1),
             }
-        ), 504
-    except requests.ConnectionError:
-        return jsonify(
-            {"error": "Cannot reach Ollama at " + config["ollama"]["host"] + "."}
-        ), 502
-    except requests.HTTPError as exc:
-        return jsonify({"error": f"Ollama returned an error: {exc}"}), 502
-
-    elapsed = round(time.monotonic() - started, 1)
-    entry = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "filename": saved_path.name,
-        "elapsed_s": elapsed,
-        "concern": concern,
-        **result,
-    }
-    history.insert(0, entry)
-    del history[HISTORY_LIMIT:]
-    return jsonify(entry)
+        )
+    if snapshot["status"] == "done":
+        return jsonify({"status": "done", **snapshot["result"]})
+    # error
+    return jsonify({"status": "error", "error": snapshot["error"]}), snapshot.get(
+        "status_code", 500
+    )
 
 
 @app.route("/healthz", methods=["GET"])

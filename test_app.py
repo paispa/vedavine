@@ -183,5 +183,85 @@ class ImagePreprocessTests(unittest.TestCase):
         self.assertLessEqual(max(re.size), app.MAX_IMAGE_EDGE)
 
 
+class AsyncJobTests(unittest.TestCase):
+    """The /analyze + /result job pattern.
+
+    /analyze must return immediately with a job_id (no Ollama call on the
+    request thread) so Cloudflare's ~100s edge timeout never sees a long
+    request. We don't run real inference here — we monkey-patch the worker
+    so the suite stays Ollama-free.
+    """
+
+    def setUp(self):
+        self.client = app.app.test_client()
+        # Replace the background worker with a deterministic stub so we can
+        # assert on submit and poll behavior without a live Ollama.
+        self._real_worker = app._run_analysis_job
+
+        def _stub_worker(job_id, *_a, **_k):
+            import time as _t
+            with app._jobs_lock:
+                app._jobs[job_id].update(
+                    {
+                        "status": "done",
+                        "result": {
+                            "severity": "Healthy",
+                            "summary": "stub",
+                            "observations": [],
+                            "recommendations": [],
+                            "sources": [],
+                            "timestamp": "stub",
+                            "filename": "stub.jpg",
+                            "elapsed_s": 0.0,
+                            "concern": "",
+                        },
+                        "finished_at": _t.monotonic(),
+                    }
+                )
+
+        app._run_analysis_job = _stub_worker
+
+    def tearDown(self):
+        app._run_analysis_job = self._real_worker
+        with app._jobs_lock:
+            app._jobs.clear()
+
+    def _tiny_jpeg_file(self):
+        """Returns a file-like JPEG. Werkzeug's test client expects a stream,
+        not raw bytes, when passing a (file, filename, mimetype) tuple."""
+        from PIL import Image
+        import io as _io
+        buf = _io.BytesIO()
+        Image.new("RGB", (32, 32), color=(0, 128, 0)).save(buf, format="JPEG")
+        buf.seek(0)
+        return buf
+
+    def test_analyze_returns_job_id(self):
+        data = {"image": (self._tiny_jpeg_file(), "vine.jpg", "image/jpeg")}
+        resp = self.client.post("/analyze", data=data, content_type="multipart/form-data")
+        self.assertEqual(resp.status_code, 202)
+        body = resp.get_json()
+        self.assertIn("job_id", body)
+        self.assertEqual(body["status"], "running")
+
+    def test_result_unknown_job_404(self):
+        resp = self.client.get("/result/does-not-exist")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_result_done_returns_entry(self):
+        # Submit (stub completes synchronously inside the thread), then poll.
+        data = {"image": (self._tiny_jpeg_file(), "vine.jpg", "image/jpeg")}
+        submit = self.client.post("/analyze", data=data, content_type="multipart/form-data").get_json()
+        # The daemon thread may not have run yet — give it a beat.
+        import time as _t
+        for _ in range(50):
+            poll = self.client.get(f"/result/{submit['job_id']}").get_json()
+            if poll.get("status") != "running":
+                break
+            _t.sleep(0.02)
+        self.assertEqual(poll["status"], "done")
+        self.assertEqual(poll["severity"], "Healthy")
+
+
 if __name__ == "__main__":
     unittest.main()
