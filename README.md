@@ -149,4 +149,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Article
 
-📝 DEV.to write-up: _coming soon_
+📝 DEV.to write-up: [I taught a Raspberry Pi to read my vines with Gemma 4](https://dev.to/ppais/i-taught-a-raspberry-pi-to-read-my-vines-with-gemma-4-206k)

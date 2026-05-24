@@ -1,8 +1,8 @@
 ---
 title: "I taught a Raspberry Pi to read my vines with Gemma 4"
-published: false
+published: true
 description: "I run a small vineyard in Michigan. So I taught a Raspberry Pi to read my vines — Gemma 4 doing real diagnostic work on-device, grounded in a viticulture library and the local weather, with no third-party AI ever seeing the photos."
-tags: gemma, ai, raspberrypi, python
+tags: gemma, gemmachallenge, devchallenge, raspberrypi
 cover_image: 
 # canonical_url:
 ---
