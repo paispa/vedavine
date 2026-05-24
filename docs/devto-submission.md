@@ -21,7 +21,7 @@ So I taught a Raspberry Pi to do it.
 
 ![VedaVine assessment running on phone — vine photo, Monitor severity, weather-aware recommendations, footer line stating no third-party AI ever sees the photos](screenshot-assessment.jpeg)
 
-- 🎬 **Walkthrough (2:40):** [demo.mp4](demo.mp4) — typing a concern, the Pi thinking, and the assessment landing
+- 🎬 **Walkthrough (2:40):** [Watch on YouTube](https://youtu.be/gU1vdnh7Qgw) — typing a concern, the Pi thinking, and the assessment landing
 - 💻 **Code:** https://github.com/paispa/vedavine
 
 ## Why Gemma 4 — and why *on the Pi*
@@ -86,7 +86,7 @@ Then reindexing started throwing `500`s on ~1 in 4 chunks. The culprit: `all-min
 
 ### 4. Made it shareable without making it a SaaS
 
-A winemaker friend, **Rajat Parr**, farms Pinot Noir on California's Central Coast — totally different climate from my Michigan Pinot Gris. Rather than hardcode my vineyard, I added optional **per-grower context** (varietal / region / ZIP). Drop in a ZIP and it re-points the weather grounding and the system prompt to *that* vineyard. Same Pi, same Gemma, two very different growers — and the photos still never touch a third-party model.
+A winemaker friend, **Rajat**, farms Pinot Noir in a very different climate from my Michigan Pinot Gris. Rather than hardcode my vineyard, I added optional **per-grower context** (varietal / region / ZIP). Drop in a ZIP and it re-points the weather grounding and the system prompt to *that* vineyard. Same Pi, same Gemma, two very different growers — and the photos still never touch a third-party model.
 
 ### 5. Cloudflare's 100-second timeout vs. Gemma's 5-minute think
 
