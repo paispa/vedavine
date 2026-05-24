@@ -21,7 +21,7 @@ So I taught a Raspberry Pi to do it.
 
 ![VedaVine assessment running on phone — vine photo, Monitor severity, weather-aware recommendations, footer line stating no third-party AI ever sees the photos](screenshot-assessment.jpeg)
 
-- 🎬 **16s demo (phone capture):** [demo.mov](demo.mov)
+- 🎬 **Walkthrough (2:40):** [demo.mp4](demo.mp4) — typing a concern, the Pi thinking, and the assessment landing
 - 💻 **Code:** https://github.com/paispa/vedavine
 
 ## Why Gemma 4 — and why *on the Pi*
